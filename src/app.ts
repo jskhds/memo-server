@@ -1,12 +1,15 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import path from 'path';
 import { errorHandler } from './middleware/errorHandler';
 import authRouter from './routes/auth';
 import decksRouter from './routes/decks';
 import cardsRouter from './routes/cards';
 import reviewRouter from './routes/review';
 import statsRouter from './routes/stats';
+import lookupRouter from './routes/lookup';
+import ttsRouter from './routes/tts';
 
 /**
  * 创建并配置 Express 应用实例
@@ -14,6 +17,9 @@ import statsRouter from './routes/stats';
  */
 export function createApp(): express.Application {
   const app = express();
+
+  // ── 静态音频文件（五十音 mp3，无需鉴权）────────────────────────────
+  app.use('/audio', express.static(path.join(__dirname, '../public/audio')));
 
   // ── 安全与解析中间件 ────────────────────────────────────────────
   app.use(helmet()); // 设置安全 HTTP 头
@@ -38,6 +44,8 @@ export function createApp(): express.Application {
   app.use('/api/decks/:deckId/cards', cardsRouter);
   app.use('/api/review', reviewRouter);
   app.use('/api/stats', statsRouter);
+  app.use('/api/lookup', lookupRouter);
+  app.use('/api/tts', ttsRouter);
 
   // ── 全局错误处理（必须放在最后）──────────────────────────────────
   app.use(errorHandler);

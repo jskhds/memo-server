@@ -10,6 +10,29 @@ import logger from '../utils/logger';
 const cardContentSchema = z.object({
   front: z.string().min(1, 'front 不能为空').max(500, 'front 最多 500 个字符').trim(),
   back: z.string().min(1, 'back 不能为空').max(2000, 'back 最多 2000 个字符').trim(),
+  reading: z.string().max(200).trim().optional(),
+  romaji: z.string().max(200).trim().optional(),
+  pitch: z.number().int().min(0).max(4).optional(),
+  meaning: z.string().max(500).trim().optional(),
+  example: z.string().max(1000).trim().optional(),
+});
+
+/** 批量创建卡片请求体 Schema */
+const batchCreateSchema = z.object({
+  cards: z
+    .array(
+      z.object({
+        front: z.string().min(1).max(500).trim(),
+        back: z.string().min(1).max(2000).trim(),
+        reading: z.string().max(200).trim().optional(),
+        romaji: z.string().max(200).trim().optional(),
+        pitch: z.number().int().min(0).max(4).optional(),
+        meaning: z.string().max(500).trim().optional(),
+        example: z.string().max(1000).trim().optional(),
+      }),
+    )
+    .min(1)
+    .max(200),
 });
 
 /** 卡片列表查询参数 Schema */
@@ -57,7 +80,9 @@ export async function getCards(req: Request, res: Response, next: NextFunction):
 
     // 只返回设计文档规定的字段，排除 userId、deckId、__v、updatedAt 等内部字段
     const cards = await Card.find(filter)
-      .select('front back ease interval repetitions nextReview status createdAt')
+      .select(
+        'front back ease interval repetitions nextReview status reading romaji pitch meaning example createdAt',
+      )
       .sort({ createdAt: 1 })
       .lean();
     sendSuccess(res, cards);
@@ -73,10 +98,11 @@ export async function getCards(req: Request, res: Response, next: NextFunction):
  */
 export async function createCard(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    console.log('dddd');
     const { deckId } = req.params;
     const userId = new Types.ObjectId(req.userId);
-    const { front, back } = cardContentSchema.parse(req.body);
+    const { front, back, reading, romaji, pitch, meaning, example } = cardContentSchema.parse(
+      req.body,
+    );
 
     const owned = await validateDeckOwnership(deckId, userId, res);
     if (!owned) return;
@@ -93,7 +119,11 @@ export async function createCard(req: Request, res: Response, next: NextFunction
       userId,
       front,
       back,
-      // SM-2 初始值
+      reading,
+      romaji,
+      pitch,
+      meaning,
+      example,
       ease: 2.5,
       interval: 1,
       repetitions: 0,
@@ -111,6 +141,11 @@ export async function createCard(req: Request, res: Response, next: NextFunction
       repetitions: card.repetitions,
       nextReview: card.nextReview,
       status: card.status,
+      reading: card.reading,
+      romaji: card.romaji,
+      pitch: card.pitch,
+      meaning: card.meaning,
+      example: card.example,
       createdAt: card.createdAt,
     });
   } catch (err) {
@@ -127,7 +162,9 @@ export async function updateCard(req: Request, res: Response, next: NextFunction
   try {
     const { deckId, cardId } = req.params;
     const userId = new Types.ObjectId(req.userId);
-    const { front, back } = cardContentSchema.parse(req.body);
+    const { front, back, reading, romaji, pitch, meaning, example } = cardContentSchema.parse(
+      req.body,
+    );
 
     if (!Types.ObjectId.isValid(cardId)) {
       sendError(res, 404, '卡片不存在');
@@ -148,10 +185,10 @@ export async function updateCard(req: Request, res: Response, next: NextFunction
       return;
     }
 
-    // 只更新 front / back，不触碰 SM-2 字段
+    // 只更新 front / back 和可选字段，不触碰 SM-2 字段
     const card = await Card.findOneAndUpdate(
       { _id: cardId, deckId, userId },
-      { front, back },
+      { front, back, reading, romaji, pitch, meaning, example },
       { new: true },
     );
 
@@ -161,7 +198,58 @@ export async function updateCard(req: Request, res: Response, next: NextFunction
     }
 
     logger.info('更新卡片', { userId: req.userId, deckId, cardId });
-    sendSuccess(res, { _id: card._id, front: card.front, back: card.back });
+    sendSuccess(res, {
+      _id: card._id,
+      front: card.front,
+      back: card.back,
+      reading: card.reading,
+      romaji: card.romaji,
+      pitch: card.pitch,
+      meaning: card.meaning,
+      example: card.example,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/decks/:deckId/cards/batch
+ * 批量创建卡片，用于五十音模板导入
+ */
+export async function batchCreateCards(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { deckId } = req.params;
+    const userId = new Types.ObjectId(req.userId);
+    const { cards } = batchCreateSchema.parse(req.body);
+
+    const owned = await validateDeckOwnership(deckId, userId, res);
+    if (!owned) return;
+
+    const docs = cards.map((c) => ({
+      deckId,
+      userId,
+      front: c.front,
+      back: c.back,
+      reading: c.reading,
+      romaji: c.romaji,
+      pitch: c.pitch,
+      meaning: c.meaning,
+      example: c.example,
+      ease: 2.5,
+      interval: 1,
+      repetitions: 0,
+      nextReview: new Date(),
+      status: 'new' as const,
+    }));
+
+    const inserted = await Card.insertMany(docs, { ordered: false });
+    logger.info('批量创建卡片', { userId: req.userId, deckId, count: inserted.length });
+    sendSuccess(res, { created: inserted.length });
   } catch (err) {
     next(err);
   }

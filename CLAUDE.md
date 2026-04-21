@@ -32,3 +32,7 @@ src/
 ├── models/ # MongoDB Schema
 ├── middleware/ # 中间件
 └── utils/ # 工具函数
+
+## 当前开发计划
+
+见 ../docs/plan.md

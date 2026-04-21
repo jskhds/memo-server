@@ -14,6 +14,11 @@ export interface ICard extends Document {
   repetitions: number;
   nextReview: Date;
   status: CardStatus;
+  reading?: string;
+  romaji?: string;
+  pitch?: number;
+  meaning?: string;
+  example?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,6 +67,11 @@ const CardSchema = new Schema<ICard>(
       enum: ['new', 'learning', 'review'],
       default: 'new',
     },
+    reading: { type: String, trim: true },
+    romaji: { type: String, trim: true },
+    pitch: { type: Number },
+    meaning: { type: String, trim: true },
+    example: { type: String, trim: true },
   },
   {
     timestamps: true, // 自动维护 createdAt / updatedAt
