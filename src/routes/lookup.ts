@@ -1,7 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { toRomaji } from 'wanakana';
+import { toRomaji, isKana } from 'wanakana';
 import { authenticate } from '../middleware/auth';
 import { sendSuccess, sendError } from '../middleware/errorHandler';
+import { lookupWord } from '../utils/dict';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -9,58 +10,35 @@ router.use(authenticate);
 
 /**
  * GET /api/lookup?word=xxx
- * 转发 Jisho API 查词，超时 5s 返回 503
+ * 本地 JMdict 查词，无需外部请求
  */
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
-    const word = req.query.word as string;
-    if (!word || !word.trim()) {
+    const word = (req.query.word as string)?.trim();
+    if (!word) {
       sendError(res, 400, '缺少 word 参数');
       return;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const entry = lookupWord(word);
 
-    let body: Record<string, unknown>;
-    try {
-      const response = await fetch(
-        `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(word.trim())}`,
-        { signal: controller.signal },
-      );
-      body = (await response.json()) as Record<string, unknown>;
-    } catch (fetchErr: unknown) {
-      if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
-        sendError(res, 503, 'Jisho API 超时');
-        return;
-      }
-      throw fetchErr;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const data = body?.data as Array<Record<string, unknown>> | undefined;
-    const first = data?.[0] as Record<string, unknown> | undefined;
-
-    if (!first) {
-      sendSuccess(res, { reading: '', romaji: '', pitch: null, meaning: '', example: '' });
+    // 纯假名输入但字典 reading 与输入不符（错误映射），直接返回假名本身
+    if (isKana(word) && (!entry || entry.reading !== word)) {
+      sendSuccess(res, { reading: word, romaji: toRomaji(word), meaning: '' });
       return;
     }
 
-    const japanese = first.japanese as Array<{ reading?: string; word?: string }> | undefined;
-    const reading = japanese?.[0]?.reading ?? '';
+    if (!entry) {
+      sendSuccess(res, { reading: '', romaji: '', meaning: '' });
+      return;
+    }
 
-    const senses = first.senses as Array<{ english_definitions?: string[] }> | undefined;
-    const meaning = (senses?.[0]?.english_definitions ?? []).slice(0, 3).join('; ');
-
-    const romaji = reading ? toRomaji(reading) : '';
-    logger.info('Jisho 查词', { word, reading, romaji, meaning });
+    const romaji = entry.reading ? toRomaji(entry.reading) : '';
+    logger.info('本地查词', { word, reading: entry.reading, romaji });
     sendSuccess(res, {
-      reading,
+      reading: entry.reading,
       romaji,
-      pitch: null,
-      meaning,
-      example: '',
+      meaning: entry.meaning,
     });
   } catch (err) {
     next(err);
