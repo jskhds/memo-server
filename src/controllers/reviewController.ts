@@ -38,9 +38,7 @@ const submitSchema = z.object({
     .array(
       z.object({
         // P1 修复：校验 ObjectId 格式，避免 new Types.ObjectId() 抛出 BSONError → 500
-        cardId: z
-          .string()
-          .regex(OBJECT_ID_REGEX, 'cardId 格式不正确，需为 24 位十六进制字符串'),
+        cardId: z.string().regex(OBJECT_ID_REGEX, 'cardId 格式不正确，需为 24 位十六进制字符串'),
         quality: z.union([z.literal(0), z.literal(3), z.literal(5)]),
       }),
     )
@@ -64,7 +62,9 @@ export async function getDueCards(req: Request, res: Response, next: NextFunctio
     }
 
     const cards = await Card.find(filter)
-      .select('front back ease interval repetitions nextReview status deckId')
+      .select(
+        'front back ease interval repetitions nextReview status deckId reading romaji   meaning  ',
+      )
       .lean();
 
     sendSuccess(res, { cards, total: cards.length });
@@ -83,11 +83,7 @@ export async function getDueCards(req: Request, res: Response, next: NextFunctio
  *   5. 更新 User.streak
  *   6. 返回 { reviewed, streak, updatedCards }
  */
-export async function submitReview(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
+export async function submitReview(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const userId = new Types.ObjectId(req.userId);
     // 1. 参数校验（Zod 自动处理 cardId 格式错误 → ZodError → 422）
