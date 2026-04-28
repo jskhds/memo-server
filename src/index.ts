@@ -17,7 +17,8 @@ async function bootstrap(): Promise<void> {
     await connectDB();
 
     const app = createApp();
-    app.listen(PORT, () => {
+    // 绑定 0.0.0.0 使局域网设备（真机调试）也能访问
+    app.listen(Number(PORT), '0.0.0.0', () => {
       logger.info(`服务已启动，端口：${PORT}，环境：${process.env.NODE_ENV}`);
     });
   } catch (err) {

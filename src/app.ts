@@ -9,6 +9,7 @@ import reviewRouter from './routes/review';
 import statsRouter from './routes/stats';
 import lookupRouter from './routes/lookup';
 import ttsRouter from './routes/tts';
+import strokeRouter from './routes/stroke';
 
 /**
  * 创建并配置 Express 应用实例
@@ -42,6 +43,7 @@ export function createApp(): express.Application {
   app.use('/api/stats', statsRouter);
   app.use('/api/lookup', lookupRouter);
   app.use('/api/tts', ttsRouter);
+  app.use('/api/stroke-data', strokeRouter);
 
   // ── 全局错误处理（必须放在最后）──────────────────────────────────
   app.use(errorHandler);
