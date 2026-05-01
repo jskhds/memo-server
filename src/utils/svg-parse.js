@@ -4,84 +4,255 @@ import path from 'path';
 
 const dirname = import.meta.dirname;
 
-// 配置
 const config = {
   inputDir: path.join(dirname, '../../public/kanjivg-raw'),
   outputDir: path.join(dirname, '../../public/stroke-data'),
   samplesPerStroke: 50,
+  samplesPerSegment: 10, // bezier 每段采样点数
 };
 
-/**
- * 简单解析 SVG path 的 d 属性，提取所有坐标点
- */
+// ── 贝塞尔曲线采样 ──────────────────────────────────────────────────────────
+
+function sampleCubic(x0, y0, x1, y1, x2, y2, x3, y3, n) {
+  const pts = [];
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const mt = 1 - t;
+    const mt2 = mt * mt,
+      t2 = t * t;
+    const mt3 = mt2 * mt,
+      t3 = t2 * t,
+      mt2t = 3 * mt2 * t,
+      mtt2 = 3 * mt * t2;
+    pts.push({
+      x: round(mt3 * x0 + mt2t * x1 + mtt2 * x2 + t3 * x3),
+      y: round(mt3 * y0 + mt2t * y1 + mtt2 * y2 + t3 * y3),
+    });
+  }
+  return pts;
+}
+
+function sampleQuad(x0, y0, x1, y1, x2, y2, n) {
+  const pts = [];
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const mt = 1 - t;
+    const mt2 = mt * mt,
+      t2 = t * t,
+      mtt2 = 2 * mt * t;
+    pts.push({
+      x: round(mt2 * x0 + mtt2 * x1 + t2 * x2),
+      y: round(mt2 * y0 + mtt2 * y1 + t2 * y2),
+    });
+  }
+  return pts;
+}
+
+function round(v) {
+  return Math.round(v * 100) / 100;
+}
+
+// ── SVG path 解析 ───────────────────────────────────────────────────────────
+
 function parsePathData(d) {
+  const N = config.samplesPerSegment;
   const points = [];
-  let currentX = 0;
-  let currentY = 0;
+  let cx = 0,
+    cy = 0;
+  let lastCtrlX = 0,
+    lastCtrlY = 0;
+  let lastCmd = '';
 
-  // 提取所有数字（包括负数和小数）
-  const numbers = d.match(/-?\d+\.?\d*/g);
-  if (!numbers) return points;
-
+  // 将 path 字符串拆成 token 序列（命令字母 | 数字）
+  const tokens = d.match(/[MmCcQqSsTtLlHhVvAaZz]|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?/g) || [];
   let i = 0;
-  const commands = d.match(/[MmLlHhVvCcSsQqTtAaZz]/g) || [];
 
-  for (const cmd of commands) {
+  const num = () => parseFloat(tokens[i++]);
+
+  while (i < tokens.length) {
+    // 若当前 token 是命令字母则读取，否则隐式重复上一条命令
+    let cmd;
+    if (/[MmCcQqSsTtLlHhVvAaZz]/.test(tokens[i])) {
+      cmd = tokens[i++];
+      // M 之后的隐式命令是 L/l
+      lastCmd = cmd === 'M' ? 'L' : cmd === 'm' ? 'l' : cmd;
+    } else {
+      cmd = lastCmd;
+    }
+
     switch (cmd) {
-      case 'M': // 绝对移动
-        currentX = parseFloat(numbers[i++]);
-        currentY = parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'M':
+        cx = num();
+        cy = num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
+        break;
+      case 'm':
+        cx += num();
+        cy += num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
         break;
 
-      case 'm': // 相对移动
-        currentX += parseFloat(numbers[i++]);
-        currentY += parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'L':
+        cx = num();
+        cy = num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
+        break;
+      case 'l':
+        cx += num();
+        cy += num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
         break;
 
-      case 'L': // 绝对直线
-        currentX = parseFloat(numbers[i++]);
-        currentY = parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'H':
+        cx = num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
+        break;
+      case 'h':
+        cx += num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
+        break;
+      case 'V':
+        cy = num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
+        break;
+      case 'v':
+        cy += num();
+        points.push({ x: round(cx), y: round(cy) });
+        lastCtrlX = cx;
+        lastCtrlY = cy;
         break;
 
-      case 'l': // 相对直线
-        currentX += parseFloat(numbers[i++]);
-        currentY += parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'C': {
+        const x1 = num(),
+          y1 = num(),
+          x2 = num(),
+          y2 = num(),
+          x3 = num(),
+          y3 = num();
+        points.push(...sampleCubic(cx, cy, x1, y1, x2, y2, x3, y3, N));
+        lastCtrlX = x2;
+        lastCtrlY = y2;
+        cx = x3;
+        cy = y3;
         break;
-
-      case 'C': // 绝对三次贝塞尔曲线
-        i += 4; // 跳过控制点
-        currentX = parseFloat(numbers[i++]);
-        currentY = parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      }
+      case 'c': {
+        const dx1 = num(),
+          dy1 = num(),
+          dx2 = num(),
+          dy2 = num(),
+          dx = num(),
+          dy = num();
+        points.push(
+          ...sampleCubic(cx, cy, cx + dx1, cy + dy1, cx + dx2, cy + dy2, cx + dx, cy + dy, N),
+        );
+        lastCtrlX = cx + dx2;
+        lastCtrlY = cy + dy2;
+        cx += dx;
+        cy += dy;
         break;
+      }
 
-      case 'c': // 相对三次贝塞尔曲线
-        i += 4; // 跳过控制点
-        currentX += parseFloat(numbers[i++]);
-        currentY += parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'S': {
+        const x1 = 2 * cx - lastCtrlX,
+          y1 = 2 * cy - lastCtrlY;
+        const x2 = num(),
+          y2 = num(),
+          x3 = num(),
+          y3 = num();
+        points.push(...sampleCubic(cx, cy, x1, y1, x2, y2, x3, y3, N));
+        lastCtrlX = x2;
+        lastCtrlY = y2;
+        cx = x3;
+        cy = y3;
         break;
-
-      case 'Q': // 绝对二次贝塞尔曲线
-        i += 2; // 跳过控制点
-        currentX = parseFloat(numbers[i++]);
-        currentY = parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      }
+      case 's': {
+        const x1 = 2 * cx - lastCtrlX,
+          y1 = 2 * cy - lastCtrlY;
+        const dx2 = num(),
+          dy2 = num(),
+          dx = num(),
+          dy = num();
+        points.push(...sampleCubic(cx, cy, x1, y1, cx + dx2, cy + dy2, cx + dx, cy + dy, N));
+        lastCtrlX = cx + dx2;
+        lastCtrlY = cy + dy2;
+        cx += dx;
+        cy += dy;
         break;
+      }
 
-      case 'q': // 相对二次贝塞尔曲线
-        i += 2; // 跳过控制点
-        currentX += parseFloat(numbers[i++]);
-        currentY += parseFloat(numbers[i++]);
-        points.push({ x: currentX, y: currentY });
+      case 'Q': {
+        const x1 = num(),
+          y1 = num(),
+          x2 = num(),
+          y2 = num();
+        points.push(...sampleQuad(cx, cy, x1, y1, x2, y2, N));
+        lastCtrlX = x1;
+        lastCtrlY = y1;
+        cx = x2;
+        cy = y2;
+        break;
+      }
+      case 'q': {
+        const dx1 = num(),
+          dy1 = num(),
+          dx = num(),
+          dy = num();
+        points.push(...sampleQuad(cx, cy, cx + dx1, cy + dy1, cx + dx, cy + dy, N));
+        lastCtrlX = cx + dx1;
+        lastCtrlY = cy + dy1;
+        cx += dx;
+        cy += dy;
+        break;
+      }
+
+      case 'T': {
+        const x1 = 2 * cx - lastCtrlX,
+          y1 = 2 * cy - lastCtrlY;
+        const x2 = num(),
+          y2 = num();
+        points.push(...sampleQuad(cx, cy, x1, y1, x2, y2, N));
+        lastCtrlX = x1;
+        lastCtrlY = y1;
+        cx = x2;
+        cy = y2;
+        break;
+      }
+      case 't': {
+        const x1 = 2 * cx - lastCtrlX,
+          y1 = 2 * cy - lastCtrlY;
+        const dx = num(),
+          dy = num();
+        points.push(...sampleQuad(cx, cy, x1, y1, cx + dx, cy + dy, N));
+        lastCtrlX = x1;
+        lastCtrlY = y1;
+        cx += dx;
+        cy += dy;
+        break;
+      }
+
+      case 'Z':
+      case 'z':
+        lastCtrlX = cx;
+        lastCtrlY = cy;
         break;
 
       default:
-        // 其他命令暂时忽略
         break;
     }
   }
@@ -89,9 +260,8 @@ function parsePathData(d) {
   return points;
 }
 
-/**
- * 重新采样到固定数量的点
- */
+// ── 等距重采样 ──────────────────────────────────────────────────────────────
+
 function resample(points, numSamples) {
   if (points.length === 0) return [];
   if (points.length <= numSamples) return points;
@@ -100,104 +270,78 @@ function resample(points, numSamples) {
   const totalLength = getTotalLength(points);
   const interval = totalLength / (numSamples - 1);
 
-  let accumulatedLength = 0;
-  let targetLength = interval;
+  let accumulated = 0;
+  let target = interval;
 
   for (let i = 1; i < points.length; i++) {
-    const segmentLength = distance(points[i - 1], points[i]);
-
-    while (accumulatedLength + segmentLength >= targetLength && result.length < numSamples) {
-      const t = (targetLength - accumulatedLength) / segmentLength;
-      const point = {
-        x: Math.round((points[i - 1].x + t * (points[i].x - points[i - 1].x)) * 100) / 100,
-        y: Math.round((points[i - 1].y + t * (points[i].y - points[i - 1].y)) * 100) / 100,
-      };
-      result.push(point);
-      targetLength += interval;
+    const segLen = distance(points[i - 1], points[i]);
+    while (accumulated + segLen >= target && result.length < numSamples) {
+      const t = (target - accumulated) / segLen;
+      result.push({
+        x: round(points[i - 1].x + t * (points[i].x - points[i - 1].x)),
+        y: round(points[i - 1].y + t * (points[i].y - points[i - 1].y)),
+      });
+      target += interval;
     }
-
-    accumulatedLength += segmentLength;
+    accumulated += segLen;
   }
 
-  // 确保包含终点
-  if (result.length < numSamples) {
-    result.push(points[points.length - 1]);
-  }
-
+  if (result.length < numSamples) result.push(points[points.length - 1]);
   return result.slice(0, numSamples);
 }
 
 function getTotalLength(points) {
-  let length = 0;
-  for (let i = 1; i < points.length; i++) {
-    length += distance(points[i - 1], points[i]);
-  }
-  return length;
+  let len = 0;
+  for (let i = 1; i < points.length; i++) len += distance(points[i - 1], points[i]);
+  return len;
 }
 
 function distance(p1, p2) {
-  return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+  return Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
 }
 
-/**
- * 解析单个 SVG 文件
- */
+// ── 文件处理 ────────────────────────────────────────────────────────────────
+
 function parseSVGFile(filePath) {
   const svgContent = fs.readFileSync(filePath, 'utf-8');
-
-  // 提取所有 path 的 d 属性
   const pathRegex = /<path[^>]+d="([^"]+)"/g;
   const strokes = [];
 
   let match;
   while ((match = pathRegex.exec(svgContent)) !== null) {
-    const d = match[1];
-    const points = parsePathData(d);
-    const sampledPoints = resample(points, config.samplesPerStroke);
-
-    if (sampledPoints.length > 0) {
-      strokes.push({
-        id: strokes.length,
-        points: sampledPoints,
-      });
+    const raw = parsePathData(match[1]);
+    const sampled = resample(raw, config.samplesPerStroke);
+    if (sampled.length > 0) {
+      strokes.push({ id: strokes.length, points: sampled });
     }
   }
 
   return strokes;
 }
 
-/**
- * 批量处理
- */
 function batchProcess() {
   if (!fs.existsSync(config.outputDir)) {
     fs.mkdirSync(config.outputDir, { recursive: true });
   }
 
   const files = fs.readdirSync(config.inputDir).filter((f) => f.endsWith('.svg'));
-
   console.log(`找到 ${files.length} 个 SVG 文件\n`);
 
   files.forEach((file, index) => {
-    const svgPath = path.join(config.inputDir, file);
-    const strokes = parseSVGFile(svgPath);
+    const strokes = parseSVGFile(path.join(config.inputDir, file));
     const unicode = file.replace('.svg', '');
-
     const data = {
-      character: String.fromCharCode(parseInt(unicode, 16)),
-      unicode: unicode,
-      strokes: strokes,
+      character: String.fromCodePoint(parseInt(unicode, 16)),
+      unicode,
+      strokes,
     };
-
-    const outputPath = path.join(config.outputDir, `${unicode}.json`);
-    fs.writeFileSync(outputPath, JSON.stringify(data, null, 2));
-
+    fs.writeFileSync(path.join(config.outputDir, `${unicode}.json`), JSON.stringify(data, null, 2));
     console.log(
-      `[${index + 1}/${files.length}] ✅ ${data.character} (${unicode}) - ${strokes.length} 笔`,
+      `[${index + 1}/${files.length}] ✅ ${data.character} (${unicode}) — ${strokes.length} 笔`,
     );
   });
 
-  console.log(`\n🎉 完成！`);
+  console.log('\n🎉 完成！');
 }
 
 batchProcess();
