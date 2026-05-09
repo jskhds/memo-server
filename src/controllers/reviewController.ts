@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { Types } from 'mongoose';
-import { Card } from '../models/Card';
+import { ICard, Card } from '../models/Card';
 import { User } from '../models/User';
 import { ReviewRecord } from '../models/ReviewRecord';
 import { calculateSM2, ReviewQuality, SM2Result } from '../utils/sm2';
@@ -11,7 +11,6 @@ import logger from '../utils/logger';
 /** MongoDB ObjectId 格式：24 位十六进制字符串 */
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
-/** 获取今日日期字符串 'YYYY-MM-DD'（服务器本地时区） */
 function getTodayStr(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -20,7 +19,6 @@ function getTodayStr(): string {
   return `${y}-${m}-${day}`;
 }
 
-/** 昨日日期字符串 */
 function getYesterdayStr(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
@@ -44,6 +42,69 @@ const submitSchema = z.object({
     )
     .min(1, '至少需要一条复习结果'),
 });
+
+type ReviewResult = { cardId: string; quality: ReviewQuality };
+
+/** 批量查询卡片并校验归属，归属不合法时返回 null */
+async function fetchAndValidateCards(
+  userId: Types.ObjectId,
+  results: ReviewResult[],
+): Promise<Map<string, ICard> | null> {
+  const cardIds = results.map((r) => new Types.ObjectId(r.cardId));
+  const cards = await Card.find({ _id: { $in: cardIds }, userId }).lean();
+  if (cards.length !== results.length) return null;
+  return new Map(cards.map((c) => [c._id.toString(), c]));
+}
+
+/** SM-2 计算 + 批量写库，返回 cardId → SM2Result 的 Map */
+async function applyReviewSM2(
+  results: ReviewResult[],
+  cardMap: Map<string, ICard>,
+): Promise<Map<string, SM2Result>> {
+  const sm2Map = new Map<string, SM2Result>();
+  const bulkOps = results.map((r) => {
+    const card = cardMap.get(r.cardId)!;
+    const sm2 = calculateSM2(card, r.quality);
+    sm2Map.set(r.cardId, sm2);
+    return {
+      updateOne: {
+        filter: { _id: card._id },
+        update: { $set: { ease: sm2.ease, interval: sm2.interval, repetitions: sm2.repetitions, nextReview: sm2.nextReview, status: sm2.status } },
+      },
+    };
+  });
+  await Card.bulkWrite(bulkOps);
+  return sm2Map;
+}
+
+/** 更新当日复习记录（upsert，count 累加） */
+async function recordDailyReview(userId: Types.ObjectId, count: number): Promise<void> {
+  await ReviewRecord.findOneAndUpdate(
+    { userId, date: getTodayStr() },
+    { $inc: { count } },
+    { upsert: true },
+  );
+}
+
+/** 更新连续打卡 streak，返回最新 streak 数据 */
+async function updateStreak(
+  userId: Types.ObjectId,
+): Promise<{ current: number; longest: number; lastDate: string }> {
+  const user = await User.findById(userId);
+  if (!user) throw new Error('用户不存在');
+
+  const streak = user.streak;
+  const today = getTodayStr();
+
+  if (streak.lastDate !== today) {
+    streak.current = streak.lastDate === getYesterdayStr() ? streak.current + 1 : 1;
+    streak.longest = Math.max(streak.longest, streak.current);
+    streak.lastDate = today;
+    await user.save();
+  }
+
+  return { current: streak.current, longest: streak.longest, lastDate: streak.lastDate };
+}
 
 /**
  * GET /api/review/due
@@ -75,108 +136,30 @@ export async function getDueCards(req: Request, res: Response, next: NextFunctio
 
 /**
  * POST /api/review/submit
- * 提交本次复习结果：
- *   1. 校验请求体（含 cardId ObjectId 格式）
- *   2. 批量查询卡片并校验归属
- *   3. 对每张卡片执行 SM-2 计算，结果缓存后批量写入
- *   4. 更新当日 ReviewRecord（upsert）
- *   5. 更新 User.streak
- *   6. 返回 { reviewed, streak, updatedCards }
  */
 export async function submitReview(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const userId = new Types.ObjectId(req.userId);
-    // 1. 参数校验（Zod 自动处理 cardId 格式错误 → ZodError → 422）
     const { results } = submitSchema.parse(req.body);
 
-    const cardIds = results.map((r) => new Types.ObjectId(r.cardId));
-
-    // 2. 批量查询卡片，同时校验归属（userId 必须匹配）
-    const cards = await Card.find({ _id: { $in: cardIds }, userId }).lean();
-
-    if (cards.length !== results.length) {
+    const cardMap = await fetchAndValidateCards(userId, results as ReviewResult[]);
+    if (!cardMap) {
       sendError(res, 403, '部分卡片不存在或无权限');
       return;
     }
 
-    const cardMap = new Map(cards.map((c) => [c._id.toString(), c]));
+    const [sm2Map, streak] = await Promise.all([
+      applyReviewSM2(results as ReviewResult[], cardMap),
+      recordDailyReview(userId, results.length).then(() => updateStreak(userId)),
+    ]);
 
-    // 3. SM-2 计算并缓存结果，避免后续重复计算（P2 修复）
-    const sm2Map = new Map<string, SM2Result>();
-    const bulkOps = results.map((r) => {
-      const card = cardMap.get(r.cardId)!;
-      const sm2 = calculateSM2(card, r.quality as ReviewQuality);
-      sm2Map.set(r.cardId, sm2); // 缓存，供构建响应时复用
-      return {
-        updateOne: {
-          filter: { _id: card._id },
-          update: {
-            $set: {
-              ease: sm2.ease,
-              interval: sm2.interval,
-              repetitions: sm2.repetitions,
-              nextReview: sm2.nextReview,
-              status: sm2.status,
-            },
-          },
-        },
-      };
-    });
-
-    await Card.bulkWrite(bulkOps);
-
-    // 4. 更新当日 ReviewRecord（upsert，count 累加）
-    const today = getTodayStr();
-    await ReviewRecord.findOneAndUpdate(
-      { userId, date: today },
-      { $inc: { count: results.length } },
-      { upsert: true },
-    );
-
-    // 5. 更新 User.streak
-    const user = await User.findById(userId);
-    if (!user) throw new Error('用户不存在');
-
-    const streak = user.streak;
-    const yesterday = getYesterdayStr();
-
-    if (streak.lastDate !== today) {
-      if (streak.lastDate === yesterday) {
-        // 昨日已复习：连续天数 +1
-        streak.current += 1;
-      } else {
-        // 中断或首次：重置为 1
-        streak.current = 1;
-      }
-      streak.longest = Math.max(streak.longest, streak.current);
-      streak.lastDate = today;
-      await user.save();
-    }
-
-    // 6. 复用缓存的 SM-2 结果构建响应，不重复计算
-    const updatedCards = results.map((r) => {
-      const sm2 = sm2Map.get(r.cardId)!;
-      return {
-        _id: cardMap.get(r.cardId)!._id,
-        ease: sm2.ease,
-        interval: sm2.interval,
-        repetitions: sm2.repetitions,
-        nextReview: sm2.nextReview,
-        status: sm2.status,
-      };
-    });
+    const updatedCards = results.map((r) => ({
+      _id: cardMap.get(r.cardId)!._id,
+      ...sm2Map.get(r.cardId)!,
+    }));
 
     logger.info('提交复习', { userId: req.userId, count: results.length });
-
-    sendSuccess(res, {
-      reviewed: results.length,
-      streak: {
-        current: streak.current,
-        longest: streak.longest,
-        lastDate: streak.lastDate,
-      },
-      updatedCards,
-    });
+    sendSuccess(res, { reviewed: results.length, streak, updatedCards });
   } catch (err) {
     next(err);
   }
