@@ -153,7 +153,7 @@ export async function getDeckStats(req: Request, res: Response, next: NextFuncti
         $group: {
           _id: '$deckId',
           total: { $sum: 1 },
-          mastered: { $sum: { $cond: [{ $gt: ['$interval', 3] }, 1, 0] } },
+          mastered: { $sum: { $cond: [{ $eq: ['$status', 'mastered'] }, 1, 0] } },
         },
       },
     ]);

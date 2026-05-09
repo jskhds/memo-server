@@ -47,8 +47,7 @@ export async function getDecks(req: Request, res: Response, next: NextFunction):
           total: { $sum: 1 },
           // 到期卡片：nextReview <= now
           due: { $sum: { $cond: [{ $lte: ['$nextReview', now] }, 1, 0] } },
-          // 掌握卡片：interval > 3（与前端 DisplayStatus '掌握' 定义对齐）
-          mastered: { $sum: { $cond: [{ $gt: ['$interval', 3] }, 1, 0] } },
+          mastered: { $sum: { $cond: [{ $eq: ['$status', 'mastered'] }, 1, 0] } },
         },
       },
     ]);

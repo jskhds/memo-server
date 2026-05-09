@@ -1,7 +1,7 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-/** 卡片状态：new=新学 / learning=学习中 / review=已复习 */
-export type CardStatus = 'new' | 'learning' | 'review';
+/** 卡片状态：new=未学 / again=不会 / learning=模糊 / mastered=掌握 */
+export type CardStatus = 'new' | 'again' | 'learning' | 'mastered';
 
 /** Card 文档接口 */
 export interface ICard extends Document {
@@ -64,7 +64,7 @@ const CardSchema = new Schema<ICard>(
     },
     status: {
       type: String,
-      enum: ['new', 'learning', 'review'],
+      enum: ['new', 'again', 'learning', 'mastered'],
       default: 'new',
     },
     reading: { type: String, trim: true },

@@ -37,7 +37,7 @@ const batchCreateSchema = z.object({
 
 /** 卡片列表查询参数 Schema */
 const cardQuerySchema = z.object({
-  status: z.enum(['new', 'learning', 'review']).optional(),
+  status: z.enum(['new', 'again', 'learning', 'mastered']).optional(),
 });
 
 /**
